@@ -1,22 +1,22 @@
-// SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
+// SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <filesystem>
-#include <fstream>
-#include <iostream>
 #include <set>
-#include <sstream>
 #include <fmt/core.h>
-#include <fmt/xchar.h>
-#include <hwinfo/hwinfo.h>
 
 #include "common/config.h"
 #include "common/debug.h"
 #include "common/logging/backend.h"
 #include "common/logging/log.h"
-#include "core/ipc/ipc.h"
+#ifdef ENABLE_QT_GUI
+#include <QtCore>
+#endif
+#include "common/assert.h"
 #ifdef ENABLE_DISCORD_RPC
 #include "common/discord_rpc_handler.h"
+#endif
+#ifdef _WIN32
+#include <WinSock2.h>
 #endif
 #include "common/elf_info.h"
 #include "common/memory_patcher.h"
@@ -25,33 +25,21 @@
 #include "common/polyfill_thread.h"
 #include "common/scm_rev.h"
 #include "common/singleton.h"
-#include "core/debugger.h"
 #include "core/devtools/widget/module_list.h"
 #include "core/file_format/psf.h"
 #include "core/file_format/trp.h"
 #include "core/file_sys/fs.h"
 #include "core/libraries/disc_map/disc_map.h"
-#include "core/libraries/font/font.h"
-#include "core/libraries/font/fontft.h"
 #include "core/libraries/libc_internal/libc_internal.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/ngs2/ngs2.h"
-#include "core/libraries/np/np_trophy.h"
+#include "core/libraries/np_trophy/np_trophy.h"
 #include "core/libraries/rtc/rtc.h"
 #include "core/libraries/save_data/save_backup.h"
 #include "core/linker.h"
 #include "core/memory.h"
 #include "emulator.h"
 #include "video_core/renderdoc.h"
-
-#ifdef _WIN32
-#include <WinSock2.h>
-#endif
-
-#ifndef _WIN32
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
 
 Frontend::WindowSDL* g_window = nullptr;
 
@@ -69,36 +57,24 @@ Emulator::Emulator() {
 #endif
 }
 
-Emulator::~Emulator() {}
+Emulator::~Emulator() {
+    const auto config_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
+    Config::saveMainWindow(config_dir / "config.toml");
+}
 
-void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
-                   std::optional<std::filesystem::path> p_game_folder) {
-    if (waitForDebuggerBeforeRun) {
-        Debugger::WaitForDebuggerAttach();
-    }
-
-    if (std::filesystem::is_directory(file)) {
-        file /= "eboot.bin";
-    }
-
-    std::filesystem::path game_folder;
-    if (p_game_folder.has_value()) {
-        game_folder = p_game_folder.value();
-    } else {
-        game_folder = file.parent_path();
-        if (const auto game_folder_name = game_folder.filename().string();
-            game_folder_name.ends_with("-UPDATE") || game_folder_name.ends_with("-patch")) {
-            // If an executable was launched from a separate update directory,
-            // use the base game directory as the game folder.
-            const std::string base_name = game_folder_name.substr(0, game_folder_name.rfind('-'));
-            const auto base_path = game_folder.parent_path() / base_name;
-            if (std::filesystem::is_directory(base_path)) {
-                game_folder = base_path;
-            }
+void Emulator::Run(const std::filesystem::path& file, const std::vector<std::string> args) {
+    const auto eboot_name = file.filename().string();
+    auto game_folder = file.parent_path();
+    if (const auto game_folder_name = game_folder.filename().string();
+        game_folder_name.ends_with("-UPDATE") || game_folder_name.ends_with("-patch")) {
+        // If an executable was launched from a separate update directory,
+        // use the base game directory as the game folder.
+        const auto base_name = game_folder_name.substr(0, game_folder_name.size() - 7);
+        const auto base_path = game_folder.parent_path() / base_name;
+        if (std::filesystem::is_directory(base_path)) {
+            game_folder = base_path;
         }
     }
-
-    std::filesystem::path eboot_name = std::filesystem::relative(file, game_folder);
 
     // Applications expect to be run from /app0 so mount the file's parent path as app0.
     auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
@@ -120,12 +96,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         ASSERT_MSG(param_sfo->Open(param_sfo_path), "Failed to open param.sfo");
 
         const auto content_id = param_sfo->GetString("CONTENT_ID");
-        const auto title_id = param_sfo->GetString("TITLE_ID");
-        if (content_id.has_value() && !content_id->empty()) {
-            id = std::string(*content_id, 7, 9);
-        } else if (title_id.has_value()) {
-            id = *title_id;
-        }
+        ASSERT_MSG(content_id.has_value(), "Failed to get CONTENT_ID");
+
+        id = std::string(*content_id, 7, 9);
         title = param_sfo->GetString("TITLE").value_or("Unknown title");
         fw_version = param_sfo->GetInteger("SYSTEM_VER").value_or(0x4700000);
         app_version = param_sfo->GetString("APP_VER").value_or("Unknown version");
@@ -134,9 +107,6 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         }
     }
 
-    Config::load(Common::FS::GetUserPath(Common::FS::PathType::CustomConfigs) / (id + ".toml"),
-                 true);
-
     // Initialize logging as soon as possible
     if (!id.empty() && Config::getSeparateLogFilesEnabled()) {
         Common::Log::Initialize(id + ".log");
@@ -144,11 +114,6 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         Common::Log::Initialize();
     }
     Common::Log::Start();
-    if (!std::filesystem::exists(file)) {
-        LOG_CRITICAL(Loader, "eboot.bin does not exist: {}",
-                     std::filesystem::absolute(file).string());
-        std::quick_exit(0);
-    }
 
     LOG_INFO(Loader, "Starting shadps4 emulator v{} ", Common::g_version);
     LOG_INFO(Loader, "Revision {}", Common::g_scm_rev);
@@ -156,25 +121,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Loader, "Description {}", Common::g_scm_desc);
     LOG_INFO(Loader, "Remote {}", Common::g_scm_remote_url);
 
-    const bool has_game_config = std::filesystem::exists(
-        Common::FS::GetUserPath(Common::FS::PathType::CustomConfigs) / (id + ".toml"));
-    LOG_INFO(Config, "Game-specific config exists: {}", has_game_config);
-
     LOG_INFO(Config, "General LogType: {}", Config::getLogType());
     LOG_INFO(Config, "General isNeo: {}", Config::isNeoModeConsole());
-    LOG_INFO(Config, "General isDevKit: {}", Config::isDevKitConsole());
-    LOG_INFO(Config, "General isConnectedToNetwork: {}", Config::getIsConnectedToNetwork());
-    LOG_INFO(Config, "General isPsnSignedIn: {}", Config::getPSNSignedIn());
     LOG_INFO(Config, "GPU isNullGpu: {}", Config::nullGpu());
-    LOG_INFO(Config, "GPU readbacks: {}", Config::readbacks());
-    LOG_INFO(Config, "GPU readbackLinearImages: {}", Config::readbackLinearImages());
-    LOG_INFO(Config, "GPU directMemoryAccess: {}", Config::directMemoryAccess());
     LOG_INFO(Config, "GPU shouldDumpShaders: {}", Config::dumpShaders());
-    LOG_INFO(Config, "GPU vblankFrequency: {}", Config::vblankFreq());
-    LOG_INFO(Config, "GPU shouldCopyGPUBuffers: {}", Config::copyGPUCmdBuffers());
+    LOG_INFO(Config, "GPU vblankDivider: {}", Config::vblankDiv());
     LOG_INFO(Config, "Vulkan gpuId: {}", Config::getGpuId());
     LOG_INFO(Config, "Vulkan vkValidation: {}", Config::vkValidationEnabled());
-    LOG_INFO(Config, "Vulkan vkValidationCore: {}", Config::vkValidationCoreEnabled());
     LOG_INFO(Config, "Vulkan vkValidationSync: {}", Config::vkValidationSyncEnabled());
     LOG_INFO(Config, "Vulkan vkValidationGpu: {}", Config::vkValidationGpuEnabled());
     LOG_INFO(Config, "Vulkan crashDiagnostics: {}", Config::getVkCrashDiagnosticEnabled());
@@ -182,22 +135,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     LOG_INFO(Config, "Vulkan guestMarkers: {}", Config::getVkGuestMarkersEnabled());
     LOG_INFO(Config, "Vulkan rdocEnable: {}", Config::isRdocEnabled());
 
-    hwinfo::Memory ram;
-    hwinfo::OS os;
-    const auto cpus = hwinfo::getAllCPUs();
-    for (const auto& cpu : cpus) {
-        LOG_INFO(Config, "CPU Model: {}", cpu.modelName());
-        LOG_INFO(Config, "CPU Physical Cores: {}, Logical Cores: {}", cpu.numPhysicalCores(),
-                 cpu.numLogicalCores());
-    }
-    LOG_INFO(Config, "Total RAM: {} GB", std::round(ram.total_Bytes() / pow(1024, 3)));
-    LOG_INFO(Config, "Operating System: {}", os.name());
-
     if (param_sfo_exists) {
         LOG_INFO(Loader, "Game id: {} Title: {}", id, title);
         LOG_INFO(Loader, "Fw: {:#x} App Version: {}", fw_version, app_version);
-        LOG_INFO(Loader, "PSVR Supported: {}", (bool)psf_attributes.support_ps_vr.Value());
-        LOG_INFO(Loader, "PSVR Required: {}", (bool)psf_attributes.require_ps_vr.Value());
     }
     if (!args.empty()) {
         const auto argc = std::min<size_t>(args.size(), 32);
@@ -214,7 +154,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     // Initialize components
     memory = Core::Memory::Instance();
-    controller = Common::Singleton<Input::GameController>::Instance();
+    controllers = Common::Singleton<Input::GameControllers>::Instance();
     linker = Common::Singleton<Core::Linker>::Instance();
 
     // Load renderdoc module
@@ -223,7 +163,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     // Initialize patcher and trophies
     if (!id.empty()) {
         MemoryPatcher::g_game_serial = id;
-        Libraries::Np::NpTrophy::game_serial = id;
+        Libraries::NpTrophy::game_serial = id;
 
         const auto trophyDir =
             Common::FS::GetUserPath(Common::FS::PathType::MetaDataDir) / id / "TrophyFiles";
@@ -254,7 +194,15 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     std::string game_title = fmt::format("{} - {} <{}>", id, title, app_version);
     std::string window_title = "";
     std::string remote_url(Common::g_scm_remote_url);
-    std::string remote_host = Common::GetRemoteNameFromLink();
+    std::string remote_host;
+    try {
+        if (*remote_url.rbegin() == '/') {
+            remote_url.pop_back();
+        }
+        remote_host = remote_url.substr(19, remote_url.rfind('/') - 19);
+    } catch (...) {
+        remote_host = "unknown";
+    }
     if (Common::g_is_release) {
         if (remote_host == "shadps4-emu" || remote_url.length() == 0) {
             window_title = fmt::format("shadPS4 v{} | {}", Common::g_version, game_title);
@@ -272,7 +220,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         }
     }
     window = std::make_unique<Frontend::WindowSDL>(
-        Config::getWindowWidth(), Config::getWindowHeight(), controller, window_title);
+        Config::getScreenWidth(), Config::getScreenHeight(), controllers, window_title);
 
     g_window = window.get();
 
@@ -309,13 +257,8 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     Libraries::InitHLELibs(&linker->GetHLESymbols());
 
     // Load the module with the linker
-    auto guest_eboot_path = "/app0/" + eboot_name.generic_string();
-    const auto eboot_path = mnt->GetHostPath(guest_eboot_path);
-    if (linker->LoadModule(eboot_path) == -1) {
-        LOG_CRITICAL(Loader, "Failed to load game's eboot.bin: {}",
-                     Common::FS::PathToUTF8String(std::filesystem::absolute(eboot_path)));
-        std::quick_exit(0);
-    }
+    const auto eboot_path = mnt->GetHostPath("/app0/" + eboot_name);
+    linker->LoadModule(eboot_path);
 
     // check if we have system modules to load
     LoadSystemModules(game_info.game_serial);
@@ -339,19 +282,25 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     }
 #endif
 
+    // Start the timer (Play Time)
+#ifdef ENABLE_QT_GUI
     if (!id.empty()) {
+        auto* timer = new QTimer();
+        QObject::connect(timer, &QTimer::timeout, [this, id]() {
+            UpdatePlayTime(id);
+            start_time = std::chrono::steady_clock::now();
+        });
+        timer->start(60000); // 60000 ms = 1 minute
+
         start_time = std::chrono::steady_clock::now();
-
-        std::thread([this, id]() {
-            while (true) {
-                std::this_thread::sleep_for(std::chrono::seconds(60));
-                UpdatePlayTime(id);
-                start_time = std::chrono::steady_clock::now();
-            }
-        }).detach();
+        const auto user_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
+        QString filePath = QString::fromStdString((user_dir / "play_time.txt").string());
+        QFile file(filePath);
+        ASSERT_MSG(file.open(QIODevice::ReadWrite | QIODevice::Text),
+                   "Error opening or creating play_time.txt");
     }
+#endif
 
-    args.insert(args.begin(), eboot_name.generic_string());
     linker->Execute(args);
 
     window->InitTimers();
@@ -359,128 +308,28 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         window->WaitEvent();
     }
 
+#ifdef ENABLE_QT_GUI
     UpdatePlayTime(id);
-
-    std::quick_exit(0);
-}
-
-void Emulator::Restart(std::filesystem::path eboot_path,
-                       const std::vector<std::string>& guest_args) {
-    std::vector<std::string> args;
-
-    auto mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
-    auto game_path = mnt->GetHostPath("/app0");
-
-    args.push_back("--log-append");
-    args.push_back("--game");
-    args.push_back(Common::FS::PathToUTF8String(eboot_path));
-
-    args.push_back("--override-root");
-    args.push_back(Common::FS::PathToUTF8String(game_path));
-
-    if (FileSys::MntPoints::ignore_game_patches) {
-        args.push_back("--ignore-game-patch");
-    }
-
-    if (!MemoryPatcher::patch_file.empty()) {
-        args.push_back("--patch");
-        args.push_back(MemoryPatcher::patch_file);
-    }
-
-    args.push_back("--wait-for-pid");
-    args.push_back(std::to_string(Debugger::GetCurrentPid()));
-
-    if (waitForDebuggerBeforeRun) {
-        args.push_back("--wait-for-debugger");
-    }
-
-    if (guest_args.size() > 0) {
-        args.push_back("--");
-        for (const auto& arg : guest_args) {
-            args.push_back(arg);
-        }
-    }
-
-    LOG_INFO(Common, "Restarting the emulator with args: {}", fmt::join(args, " "));
-    Libraries::SaveData::Backup::StopThread();
-    Common::Log::Denitializer();
-
-    auto& ipc = IPC::Instance();
-
-    if (ipc.IsEnabled()) {
-        ipc.SendRestart(args);
-        while (true) {
-            std::this_thread::sleep_for(std::chrono::minutes(1));
-        }
-    }
-#if defined(_WIN32)
-    std::string cmdline;
-    // Emulator executable
-    cmdline += "\"";
-    cmdline += executableName;
-    cmdline += "\"";
-    for (const auto& arg : args) {
-        cmdline += " \"";
-        cmdline += arg;
-        cmdline += "\"";
-    }
-    cmdline += "\0";
-
-    STARTUPINFOA si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    bool success = CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE, 0, nullptr,
-                                  nullptr, &si, &pi);
-
-    if (!success) {
-        std::cerr << "Failed to restart game: {}" << GetLastError() << std::endl;
-        std::quick_exit(1);
-    }
-
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-#elif defined(__APPLE__) || defined(__linux__)
-    std::vector<char*> argv;
-
-    // Emulator executable
-    argv.push_back(const_cast<char*>(executableName));
-
-    for (const auto& arg : args) {
-        argv.push_back(const_cast<char*>(arg.c_str()));
-    }
-    argv.push_back(nullptr);
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        // Child process - execute the new instance
-        execvp(executableName, argv.data());
-        std::cerr << "Failed to restart game: execvp failed" << std::endl;
-        std::quick_exit(1);
-    } else if (pid < 0) {
-        std::cerr << "Failed to restart game: fork failed" << std::endl;
-        std::quick_exit(1);
-    }
-#else
-#error "Unsupported platform"
 #endif
 
     std::quick_exit(0);
 }
 
 void Emulator::LoadSystemModules(const std::string& game_serial) {
-    constexpr auto ModulesToLoad = std::to_array<SysModules>(
-        {{"libSceNgs2.sprx", &Libraries::Ngs2::RegisterLib},
+    constexpr std::array<SysModules, 10> ModulesToLoad{
+        {{"libSceNgs2.sprx", &Libraries::Ngs2::RegisterlibSceNgs2},
          {"libSceUlt.sprx", nullptr},
          {"libSceJson.sprx", nullptr},
          {"libSceJson2.sprx", nullptr},
-         {"libSceLibcInternal.sprx", &Libraries::LibcInternal::RegisterLib},
+         {"libSceLibcInternal.sprx", &Libraries::LibcInternal::RegisterlibSceLibcInternal},
+         {"libSceRtc.sprx", &Libraries::Rtc::RegisterlibSceRtc},
          {"libSceCesCs.sprx", nullptr},
-         {"libSceFont.sprx", &Libraries::Font::RegisterlibSceFont},
-         {"libSceFontFt.sprx", &Libraries::FontFt::RegisterlibSceFontFt},
-         {"libSceFreeTypeOt.sprx", nullptr}});
+         {"libSceFont.sprx", nullptr},
+         {"libSceFontFt.sprx", nullptr},
+         {"libSceFreeTypeOt.sprx", nullptr}}};
 
     std::vector<std::filesystem::path> found_modules;
-    const auto& sys_module_path = Config::getSysModulesPath();
+    const auto& sys_module_path = Common::FS::GetUserPath(Common::FS::PathType::SysModuleDir);
     for (const auto& entry : std::filesystem::directory_iterator(sys_module_path)) {
         found_modules.push_back(entry.path());
     }
@@ -510,70 +359,74 @@ void Emulator::LoadSystemModules(const std::string& game_serial) {
     }
 }
 
+#ifdef ENABLE_QT_GUI
 void Emulator::UpdatePlayTime(const std::string& serial) {
     const auto user_dir = Common::FS::GetUserPath(Common::FS::PathType::UserDir);
-    const auto filePath = (user_dir / "play_time.txt").string();
+    QString filePath = QString::fromStdString((user_dir / "play_time.txt").string());
 
-    std::ifstream in(filePath);
-    if (!in && !std::ofstream(filePath)) {
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadWrite | QIODevice::Text)) {
         LOG_INFO(Loader, "Error opening play_time.txt");
         return;
     }
 
     auto end_time = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time);
-    int total_seconds = static_cast<int>(duration.count());
+    int totalSeconds = duration.count();
 
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line)) {
-        lines.push_back(line);
+    QTextStream in(&file);
+    QStringList lines;
+    QString content;
+    while (!in.atEnd()) {
+        content += in.readLine() + "\n";
     }
-    in.close();
+    file.close();
 
-    int accumulated_seconds = 0;
+    QStringList existingLines = content.split('\n', Qt::SkipEmptyParts);
+    int accumulatedSeconds = 0;
     bool found = false;
 
-    for (const auto& l : lines) {
-        std::istringstream iss(l);
-        std::string s, time_str;
-        if (iss >> s >> time_str && s == serial) {
-            int h, m, s_;
-            char c1, c2;
-            std::istringstream ts(time_str);
-            if (ts >> h >> c1 >> m >> c2 >> s_ && c1 == ':' && c2 == ':') {
-                accumulated_seconds = h * 3600 + m * 60 + s_;
+    for (const QString& line : existingLines) {
+        QStringList parts = line.split(' ');
+        if (parts.size() == 2 && parts[0] == QString::fromStdString(serial)) {
+            QStringList timeParts = parts[1].split(':');
+            if (timeParts.size() == 3) {
+                int hours = timeParts[0].toInt();
+                int minutes = timeParts[1].toInt();
+                int seconds = timeParts[2].toInt();
+                accumulatedSeconds = hours * 3600 + minutes * 60 + seconds;
                 found = true;
                 break;
             }
         }
     }
+    accumulatedSeconds += totalSeconds;
+    int hours = accumulatedSeconds / 3600;
+    int minutes = (accumulatedSeconds % 3600) / 60;
+    int seconds = accumulatedSeconds % 60;
+    QString playTimeSaved = QString::number(hours) + ":" +
+                            QString::number(minutes).rightJustified(2, '0') + ":" +
+                            QString::number(seconds).rightJustified(2, '0');
 
-    accumulated_seconds += total_seconds;
-    int hours = accumulated_seconds / 3600;
-    int minutes = (accumulated_seconds % 3600) / 60;
-    int seconds = accumulated_seconds % 60;
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QTextStream out(&file);
+        bool lineUpdated = false;
 
-    std::string playTimeSaved = fmt::format("{:d}:{:02d}:{:02d}", hours, minutes, seconds);
+        for (const QString& line : existingLines) {
+            if (line.startsWith(QString::fromStdString(serial))) {
+                out << QString::fromStdString(serial) + " " + playTimeSaved + "\n";
+                lineUpdated = true;
+            } else {
+                out << line << "\n";
+            }
+        }
 
-    std::ofstream outfile(filePath, std::ios::trunc);
-    bool lineUpdated = false;
-    for (const auto& l : lines) {
-        std::istringstream iss(l);
-        std::string s;
-        if (iss >> s && s == serial) {
-            outfile << fmt::format("{} {}\n", serial, playTimeSaved);
-            lineUpdated = true;
-        } else {
-            outfile << l << "\n";
+        if (!lineUpdated) {
+            out << QString::fromStdString(serial) + " " + playTimeSaved + "\n";
         }
     }
-
-    if (!lineUpdated) {
-        outfile << fmt::format("{} {}\n", serial, playTimeSaved);
-    }
-
-    LOG_INFO(Loader, "Playing time for {}: {}", serial, playTimeSaved);
+    LOG_INFO(Loader, "Playing time for {}: {}", serial, playTimeSaved.toStdString());
 }
+#endif
 
 } // namespace Core

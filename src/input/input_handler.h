@@ -23,19 +23,7 @@
 #define SDL_MOUSE_WHEEL_LEFT SDL_EVENT_MOUSE_WHEEL + 5
 #define SDL_MOUSE_WHEEL_RIGHT SDL_EVENT_MOUSE_WHEEL + 7
 
-#define SDL_GAMEPAD_BUTTON_TOUCHPAD_LEFT SDL_GAMEPAD_BUTTON_COUNT + 1
-#define SDL_GAMEPAD_BUTTON_TOUCHPAD_CENTER SDL_GAMEPAD_BUTTON_COUNT + 2
-#define SDL_GAMEPAD_BUTTON_TOUCHPAD_RIGHT SDL_GAMEPAD_BUTTON_COUNT + 3
-
-#define SDL_EVENT_TOGGLE_FULLSCREEN SDL_EVENT_USER + 1
-#define SDL_EVENT_TOGGLE_PAUSE SDL_EVENT_USER + 2
-#define SDL_EVENT_CHANGE_CONTROLLER SDL_EVENT_USER + 3
-#define SDL_EVENT_TOGGLE_SIMPLE_FPS SDL_EVENT_USER + 4
-#define SDL_EVENT_RELOAD_INPUTS SDL_EVENT_USER + 5
-#define SDL_EVENT_MOUSE_TO_JOYSTICK SDL_EVENT_USER + 6
-#define SDL_EVENT_MOUSE_TO_GYRO SDL_EVENT_USER + 7
-#define SDL_EVENT_RDOC_CAPTURE SDL_EVENT_USER + 8
-#define SDL_EVENT_QUIT_DIALOG SDL_EVENT_USER + 9
+// idk who already used what where so I just chose a big number
 #define SDL_EVENT_MOUSE_WHEEL_OFF SDL_EVENT_USER + 10
 
 #define LEFTJOYSTICK_HALFMODE 0x00010000
@@ -43,18 +31,6 @@
 #define BACK_BUTTON 0x00040000
 
 #define KEY_TOGGLE 0x00200000
-#define MOUSE_GYRO_ROLL_MODE 0x00400000
-
-#define HOTKEY_FULLSCREEN 0xf0000001
-#define HOTKEY_PAUSE 0xf0000002
-#define HOTKEY_SIMPLE_FPS 0xf0000003
-#define HOTKEY_QUIT 0xf0000004
-#define HOTKEY_RELOAD_INPUTS 0xf0000005
-#define HOTKEY_TOGGLE_MOUSE_TO_JOYSTICK 0xf0000006
-#define HOTKEY_TOGGLE_MOUSE_TO_GYRO 0xf0000007
-#define HOTKEY_RENDERDOC 0xf0000008
-
-#define SDL_UNMAPPED UINT32_MAX - 1
 
 namespace Input {
 using Input::Axis;
@@ -73,21 +49,24 @@ class InputID {
 public:
     InputType type;
     u32 sdl_id;
-    InputID(InputType d = InputType::Count, u32 i = SDL_UNMAPPED) : type(d), sdl_id(i) {}
+    u8 gamepad_id;
+    InputID(InputType d = InputType::Count, u32 i = (u32)-1, u8 g = 1)
+        : type(d), sdl_id(i), gamepad_id(g) {}
     bool operator==(const InputID& o) const {
-        return type == o.type && sdl_id == o.sdl_id;
+        return type == o.type && sdl_id == o.sdl_id && gamepad_id == o.gamepad_id;
     }
     bool operator!=(const InputID& o) const {
-        return type != o.type || sdl_id != o.sdl_id;
+        return type != o.type || sdl_id != o.sdl_id || gamepad_id != o.gamepad_id;
     }
     bool operator<=(const InputID& o) const {
         return type <= o.type && sdl_id <= o.sdl_id;
+        return std::tie(gamepad_id, type, sdl_id) <= std::tie(o.gamepad_id, o.type, o.sdl_id);
     }
     bool IsValid() const {
         return *this != InputID();
     }
     std::string ToString() {
-        return fmt::format("({}: {:x})", input_type_names[static_cast<u8>(type)], sdl_id);
+        return fmt::format("({}. {}: {:x})", gamepad_id, input_type_names[(u8)type], sdl_id);
     }
 };
 
@@ -120,28 +99,12 @@ const std::map<std::string, u32> string_to_cbutton_map = {
     {"options", SDL_GAMEPAD_BUTTON_START},
 
     // these are outputs only (touchpad can only be bound to itself)
-    {"touchpad_left", SDL_GAMEPAD_BUTTON_TOUCHPAD_LEFT},
-    {"touchpad_center", SDL_GAMEPAD_BUTTON_TOUCHPAD_CENTER},
-    {"touchpad_right", SDL_GAMEPAD_BUTTON_TOUCHPAD_RIGHT},
+    {"touchpad", SDL_GAMEPAD_BUTTON_TOUCHPAD},
     {"leftjoystick_halfmode", LEFTJOYSTICK_HALFMODE},
     {"rightjoystick_halfmode", RIGHTJOYSTICK_HALFMODE},
 
     // this is only for input
     {"back", SDL_GAMEPAD_BUTTON_BACK},
-    {"share", SDL_GAMEPAD_BUTTON_BACK},
-    {"lpaddle_high", SDL_GAMEPAD_BUTTON_LEFT_PADDLE1},
-    {"lpaddle_low", SDL_GAMEPAD_BUTTON_LEFT_PADDLE2},
-    {"rpaddle_high", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1},
-    {"rpaddle_low", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2},
-    {"mouse_gyro_roll_mode", MOUSE_GYRO_ROLL_MODE},
-    {"hotkey_pause", HOTKEY_PAUSE},
-    {"hotkey_fullscreen", HOTKEY_FULLSCREEN},
-    {"hotkey_show_fps", HOTKEY_SIMPLE_FPS},
-    {"hotkey_quit", HOTKEY_QUIT},
-    {"hotkey_reload_inputs", HOTKEY_RELOAD_INPUTS},
-    {"hotkey_toggle_mouse_to_joystick", HOTKEY_TOGGLE_MOUSE_TO_JOYSTICK},
-    {"hotkey_toggle_mouse_to_gyro", HOTKEY_TOGGLE_MOUSE_TO_GYRO},
-    {"hotkey_renderdoc_capture", HOTKEY_RENDERDOC},
 };
 
 const std::map<std::string, AxisMapping> string_to_axis_map = {
@@ -164,7 +127,6 @@ const std::map<std::string, AxisMapping> string_to_axis_map = {
     {"axis_right_y", {SDL_GAMEPAD_AXIS_RIGHTY, 127}},
 };
 const std::map<std::string, u32> string_to_keyboard_key_map = {
-    // alphanumeric
     {"a", SDLK_A},
     {"b", SDLK_B},
     {"c", SDLK_C},
@@ -201,87 +163,6 @@ const std::map<std::string, u32> string_to_keyboard_key_map = {
     {"7", SDLK_7},
     {"8", SDLK_8},
     {"9", SDLK_9},
-
-    // F keys
-    {"f1", SDLK_F1},
-    {"f2", SDLK_F2},
-    {"f3", SDLK_F3},
-    {"f4", SDLK_F4},
-    {"f5", SDLK_F5},
-    {"f6", SDLK_F6},
-    {"f7", SDLK_F7},
-    {"f8", SDLK_F8},
-    {"f9", SDLK_F9},
-    {"f10", SDLK_F10},
-    {"f11", SDLK_F11},
-    {"f12", SDLK_F12},
-
-    // symbols
-    {"grave", SDLK_GRAVE},
-    {"tilde", SDLK_TILDE},
-    {"exclamation", SDLK_EXCLAIM},
-    {"at", SDLK_AT},
-    {"hash", SDLK_HASH},
-    {"dollar", SDLK_DOLLAR},
-    {"percent", SDLK_PERCENT},
-    {"caret", SDLK_CARET},
-    {"ampersand", SDLK_AMPERSAND},
-    {"asterisk", SDLK_ASTERISK},
-    {"lparen", SDLK_LEFTPAREN},
-    {"rparen", SDLK_RIGHTPAREN},
-    {"minus", SDLK_MINUS},
-    {"underscore", SDLK_UNDERSCORE},
-    {"equals", SDLK_EQUALS},
-    {"plus", SDLK_PLUS},
-    {"lbracket", SDLK_LEFTBRACKET},
-    {"rbracket", SDLK_RIGHTBRACKET},
-    {"lbrace", SDLK_LEFTBRACE},
-    {"rbrace", SDLK_RIGHTBRACE},
-    {"backslash", SDLK_BACKSLASH},
-    {"pipe", SDLK_PIPE},
-    {"semicolon", SDLK_SEMICOLON},
-    {"colon", SDLK_COLON},
-    {"apostrophe", SDLK_APOSTROPHE},
-    {"quote", SDLK_DBLAPOSTROPHE},
-    {"comma", SDLK_COMMA},
-    {"less", SDLK_LESS},
-    {"period", SDLK_PERIOD},
-    {"greater", SDLK_GREATER},
-    {"slash", SDLK_SLASH},
-    {"question", SDLK_QUESTION},
-
-    // special keys
-    {"escape", SDLK_ESCAPE},
-    {"printscreen", SDLK_PRINTSCREEN},
-    {"scrolllock", SDLK_SCROLLLOCK},
-    {"pausebreak", SDLK_PAUSE},
-    {"backspace", SDLK_BACKSPACE},
-    {"delete", SDLK_DELETE},
-    {"insert", SDLK_INSERT},
-    {"home", SDLK_HOME},
-    {"end", SDLK_END},
-    {"pgup", SDLK_PAGEUP},
-    {"pgdown", SDLK_PAGEDOWN},
-    {"tab", SDLK_TAB},
-    {"capslock", SDLK_CAPSLOCK},
-    {"enter", SDLK_RETURN},
-    {"lshift", SDLK_LSHIFT},
-    {"rshift", SDLK_RSHIFT},
-    {"lctrl", SDLK_LCTRL},
-    {"rctrl", SDLK_RCTRL},
-    {"lalt", SDLK_LALT},
-    {"ralt", SDLK_RALT},
-    {"lmeta", SDLK_LGUI},
-    {"rmeta", SDLK_RGUI},
-    {"lwin", SDLK_LGUI},
-    {"rwin", SDLK_RGUI},
-    {"space", SDLK_SPACE},
-    {"up", SDLK_UP},
-    {"down", SDLK_DOWN},
-    {"left", SDLK_LEFT},
-    {"right", SDLK_RIGHT},
-
-    // keypad
     {"kp0", SDLK_KP_0},
     {"kp1", SDLK_KP_1},
     {"kp2", SDLK_KP_2},
@@ -292,16 +173,43 @@ const std::map<std::string, u32> string_to_keyboard_key_map = {
     {"kp7", SDLK_KP_7},
     {"kp8", SDLK_KP_8},
     {"kp9", SDLK_KP_9},
-    {"kpperiod", SDLK_KP_PERIOD},
-    {"kpcomma", SDLK_KP_COMMA},
-    {"kpslash", SDLK_KP_DIVIDE},
-    {"kpasterisk", SDLK_KP_MULTIPLY},
-    {"kpminus", SDLK_KP_MINUS},
-    {"kpplus", SDLK_KP_PLUS},
-    {"kpequals", SDLK_KP_EQUALS},
-    {"kpenter", SDLK_KP_ENTER},
-
-    // mouse
+    {"comma", SDLK_COMMA},
+    {"period", SDLK_PERIOD},
+    {"question", SDLK_QUESTION},
+    {"semicolon", SDLK_SEMICOLON},
+    {"minus", SDLK_MINUS},
+    {"underscore", SDLK_UNDERSCORE},
+    {"lparenthesis", SDLK_LEFTPAREN},
+    {"rparenthesis", SDLK_RIGHTPAREN},
+    {"lbracket", SDLK_LEFTBRACKET},
+    {"rbracket", SDLK_RIGHTBRACKET},
+    {"lbrace", SDLK_LEFTBRACE},
+    {"rbrace", SDLK_RIGHTBRACE},
+    {"backslash", SDLK_BACKSLASH},
+    {"dash", SDLK_SLASH},
+    {"enter", SDLK_RETURN},
+    {"space", SDLK_SPACE},
+    {"tab", SDLK_TAB},
+    {"backspace", SDLK_BACKSPACE},
+    {"escape", SDLK_ESCAPE},
+    {"left", SDLK_LEFT},
+    {"right", SDLK_RIGHT},
+    {"up", SDLK_UP},
+    {"down", SDLK_DOWN},
+    {"lctrl", SDLK_LCTRL},
+    {"rctrl", SDLK_RCTRL},
+    {"lshift", SDLK_LSHIFT},
+    {"rshift", SDLK_RSHIFT},
+    {"lalt", SDLK_LALT},
+    {"ralt", SDLK_RALT},
+    {"lmeta", SDLK_LGUI},
+    {"rmeta", SDLK_RGUI},
+    {"lwin", SDLK_LGUI},
+    {"rwin", SDLK_RGUI},
+    {"home", SDLK_HOME},
+    {"end", SDLK_END},
+    {"pgup", SDLK_PAGEUP},
+    {"pgdown", SDLK_PAGEDOWN},
     {"leftbutton", SDL_BUTTON_LEFT},
     {"rightbutton", SDL_BUTTON_RIGHT},
     {"middlebutton", SDL_BUTTON_MIDDLE},
@@ -311,9 +219,15 @@ const std::map<std::string, u32> string_to_keyboard_key_map = {
     {"mousewheeldown", SDL_MOUSE_WHEEL_DOWN},
     {"mousewheelleft", SDL_MOUSE_WHEEL_LEFT},
     {"mousewheelright", SDL_MOUSE_WHEEL_RIGHT},
-
-    // no binding
-    {"unmapped", SDL_UNMAPPED},
+    {"kpperiod", SDLK_KP_PERIOD},
+    {"kpcomma", SDLK_KP_COMMA},
+    {"kpdivide", SDLK_KP_DIVIDE},
+    {"kpmultiply", SDLK_KP_MULTIPLY},
+    {"kpminus", SDLK_KP_MINUS},
+    {"kpplus", SDLK_KP_PLUS},
+    {"kpenter", SDLK_KP_ENTER},
+    {"kpequals", SDLK_KP_EQUALS},
+    {"capslock", SDLK_CAPSLOCK},
 };
 
 void ParseInputConfig(const std::string game_id);
@@ -409,16 +323,16 @@ public:
     // returns an InputEvent based on the event type (keyboard, mouse buttons/wheel, or controller)
     static InputEvent GetInputEventFromSDLEvent(const SDL_Event& e);
 };
-
 class ControllerOutput {
-    static GameController* controller;
+    static GameControllers controllers;
 
 public:
-    static void SetControllerOutputController(GameController* c);
+    static void GetGetGamepadIndexFromSDLJoystickID(const SDL_JoystickID id) {}
     static void LinkJoystickAxes();
 
     u32 button;
     u32 axis;
+    u8 gamepad_id;
     // these are only used as s8,
     // but I added some padding to avoid overflow if it's activated by multiple inputs
     // axis_plus and axis_minus pairs share a common new_param, the other outputs have their own
@@ -432,6 +346,7 @@ public:
         new_param = new s16(0);
         old_param = 0;
         positive_axis = p;
+        gamepad_id = 0;
     }
     ControllerOutput(const ControllerOutput& o) : button(o.button), axis(o.axis) {
         new_param = new s16(*o.new_param);
@@ -457,7 +372,7 @@ public:
 
     void ResetUpdate();
     void AddUpdate(InputEvent event);
-    void FinalizeUpdate();
+    void FinalizeUpdate(u8 gamepad_index);
 };
 class BindingConnection {
 public:
@@ -472,6 +387,13 @@ public:
         output = out;
         toggle = t;
     }
+    BindingConnection& operator=(const BindingConnection& o) {
+        binding = o.binding;
+        output = o.output;
+        axis_param = o.axis_param;
+        toggle = o.toggle;
+        return *this;
+    }
     bool operator<(const BindingConnection& other) const {
         // a button is a higher priority than an axis, as buttons can influence axes
         // (e.g. joystick_halfmode)
@@ -485,7 +407,62 @@ public:
         }
         return false;
     }
+    bool HasGamepadInput() {
+        for (auto& key : binding.keys) {
+            if (key.type == InputType::Controller || key.type == InputType::Axis) {
+                return true;
+            }
+        }
+        return false;
+    }
+    BindingConnection CopyWithChangedGamepadId(u8 gamepad);
     InputEvent ProcessBinding();
+};
+
+class ControllerAllOutputs {
+public:
+    std::array<ControllerOutput, 24> data = {
+        // Important: these have to be the first, or else they will update in the wrong order
+        ControllerOutput(LEFTJOYSTICK_HALFMODE),
+        ControllerOutput(RIGHTJOYSTICK_HALFMODE),
+        ControllerOutput(KEY_TOGGLE),
+
+        // Button mappings
+        ControllerOutput(SDL_GAMEPAD_BUTTON_NORTH),          // Triangle
+        ControllerOutput(SDL_GAMEPAD_BUTTON_EAST),           // Circle
+        ControllerOutput(SDL_GAMEPAD_BUTTON_SOUTH),          // Cross
+        ControllerOutput(SDL_GAMEPAD_BUTTON_WEST),           // Square
+        ControllerOutput(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER),  // L1
+        ControllerOutput(SDL_GAMEPAD_BUTTON_LEFT_STICK),     // L3
+        ControllerOutput(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER), // R1
+        ControllerOutput(SDL_GAMEPAD_BUTTON_RIGHT_STICK),    // R3
+        ControllerOutput(SDL_GAMEPAD_BUTTON_START),          // Options
+        ControllerOutput(SDL_GAMEPAD_BUTTON_TOUCHPAD),       // TouchPad
+        ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_UP),        // Up
+        ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_DOWN),      // Down
+        ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_LEFT),      // Left
+        ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_RIGHT),     // Right
+
+        // Axis mappings
+        // ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_LEFTX, false),
+        // ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_LEFTY, false),
+        // ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_RIGHTX, false),
+        // ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_RIGHTY, false),
+        ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_LEFTX),
+        ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_LEFTY),
+        ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_RIGHTX),
+        ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_RIGHTY),
+
+        ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_LEFT_TRIGGER),
+        ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER),
+
+        ControllerOutput(SDL_GAMEPAD_BUTTON_INVALID, SDL_GAMEPAD_AXIS_INVALID),
+    };
+    ControllerAllOutputs(u8 g) {
+        for (int i = 0; i < 24; i++) {
+            data[i].gamepad_id = g;
+        }
+    }
 };
 
 // Updates the list of pressed keys with the given input.
